@@ -21,6 +21,7 @@ from ladybug_geometry.geometry3d.pointvector import Point3D
 from ladybug_geometry.geometry3d.polyface import Polyface3D
 
 from .inputs import GRID_DIM
+from .shared_walls import make_adiabatic, shared_edges_on_floor
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -70,7 +71,11 @@ def _apply_wwr_and_shading(room: Room, cfg: dict) -> None:
     sill_height = max(0.0, (floor_height - window_height) / 2.0)
     centerline_separation = max(window_width + window_spacing, 0.01)
 
-    for face, ratio in zip(walls, ratios):
+    shared = shared_edges_on_floor(cfg, cfg['selected_floor_number'])
+    for index, (face, ratio) in enumerate(zip(walls, ratios)):
+        if index in shared:
+            make_adiabatic(face)
+            continue
         if ratio <= 0:
             continue
         face.apertures_by_ratio_rectangle(
