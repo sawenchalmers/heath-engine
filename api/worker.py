@@ -94,6 +94,7 @@ def run_study(
                 da_lux=da_lux,
                 sda_target_pct=sda_target_pct,
             )
+        
 
         # ── Store result ──────────────────────────────────────────────────────
         store.update(

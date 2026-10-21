@@ -180,8 +180,11 @@ without receiving sensor grids or their own daylight results.
 
 ## Local development
 
+Currently, development assumes Python 3.11 is installed.
+
 ```bash
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate # for mac
+python -3.11 -m venv .venv && source .venv/Scripts/activate # for windows
 pip install -r requirements.txt
 pip install pytest
 

@@ -15,6 +15,9 @@ annual_daylight_sim/
 daylight_factor_sim/
 studies/
 
+# I think..?
+data/ 
+
 # Ladybug / Radiance artifacts
 *.oct
 *.ill

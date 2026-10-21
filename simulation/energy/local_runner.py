@@ -31,16 +31,31 @@ def _find_native_eplus() -> str | None:
         path = shutil.which(candidate)
         if path:
             return path
-    for prefix in (
-        '/usr/local/EnergyPlus-23-2-0',
-        '/Applications/EnergyPlus-23-2-0',
-        '/usr/local/EnergyPlus-24-2-0',
-        '/Applications/EnergyPlus-24-2-0',
-        '/Applications/OpenStudio-3.9.0/EnergyPlus',  # OpenStudio-bundled ARM64 binary
-        '/Applications/OpenStudio-3.8.0/EnergyPlus',
-        '/Applications/OpenStudio-3.7.0/EnergyPlus',
-    ):
-        candidate = os.path.join(prefix, 'energyplus')
+    prefixes = []
+
+    if os.name == 'nt':
+        prefixes.append(
+            os.path.join(
+                os.path.expanduser('~'),
+                'ladybug_tools',
+                'openstudio-3.10.0',
+                'EnergyPlus'
+            )
+        )
+    else:
+        prefixes.extend([
+            '/usr/local/EnergyPlus-23-2-0',
+            '/Applications/EnergyPlus-23-2-0',
+            '/usr/local/EnergyPlus-24-2-0',
+            '/Applications/EnergyPlus-24-2-0',
+            '/Applications/OpenStudio-3.9.0/EnergyPlus',
+            '/Applications/OpenStudio-3.8.0/EnergyPlus',
+            '/Applications/OpenStudio-3.7.0/EnergyPlus',
+        ])
+
+    for prefix in prefixes:
+        executable = 'energyplus.exe' if os.name == 'nt' else 'energyplus'
+        candidate = os.path.join(prefix, executable)
         if os.path.isfile(candidate):
             return candidate
     return None
