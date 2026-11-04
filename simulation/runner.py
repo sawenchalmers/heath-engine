@@ -1,101 +1,174 @@
-"""
-simulation.runner
-─────────────────
-Execute Honeybee recipes and manage output folders.
+"""Run Honeybee daylight studies with Foton.
 
-Public API
-----------
-run_df(model_path, project_folder, sensor_count, *, draft=True) -> None
-run_annual(model_path, project_folder, sensor_count, wea_path, *, draft=True) -> None
-
-Both functions resolve the queenbee binary from the current Python executable's
-venv so subprocess tasks always use the right CLI tools.
+Foton performs scene conversion, ray transport, and daylight metric reduction.
+Annual weather preparation still uses ``gendaymtx``, which is the sole Radiance
+binary required by this module.
 """
 
-import multiprocessing
+from __future__ import annotations
+
+import json
 import os
-import sys
+from pathlib import Path
+import re
 
-from lbt_recipes.recipe import Recipe
-from lbt_recipes.settings import RecipeSettings
+import numpy as np
+from foton import Engine
+from foton.honeybee import run_annual_daylight
+from foton.honeybee.adapter import prepare_honeybee_scene
 
-# ── Venv path setup (must run before any subprocess is spawned) ───────────────
 
-_venv_bin = os.path.dirname(sys.executable)
-os.environ['PATH'] = _venv_bin + os.pathsep + os.environ.get('PATH', '')
-_pycompat = os.path.abspath('./pycompat')
-os.environ['PYTHONPATH'] = _pycompat + os.pathsep + os.environ.get('PYTHONPATH', '')
+DAYLIGHT_SOLVER_PROFILE = 'foton-0.2-final-tregenza-multifloor-v2'
 
-_QUEENBEE = os.path.join(_venv_bin, 'queenbee')
-
-# ── Radiance parameters ───────────────────────────────────────────────────────
-
-RAD_PARAMS = {
-    'daylight_factor': {
-        True:  '-ab 1 -aa 0.3 -ad 128 -ar 8',
-        False: '-ab 2 -aa 0.1  -ad 2048 -ar 64',
-    },
-    'annual_daylight': {
-        True:  '-ab 1 -ad 256  -lw 5e-05 -dr 0',
-        False: '-ab 2 -ad 5000 -lw 2e-05 -dr 0',
-    },
-    'annual_irradiance': {
-        True:  '-ab 1 -ad 256  -lw 5e-05 -dr 0',
-        False: '-ab 2 -ad 5000 -lw 2e-05 -dr 0',
-    },
-    'sky_view': {
-        True:  '-aa 0.2 -ad 128  -ar 8',
-        False: '-aa 0.1 -ad 2048 -ar 64',
-    },
-    'point_in_time_grid': {
-        True:  '-ab 1 -aa 0.3 -ad 128 -ar 8',
-        False: '-ab 2 -aa 0.1  -ad 2048 -ar 64',
-    },
-    'direct_sun_hours': {True: None, False: None},
+FINAL_TREGENZA = {
+    'quality': 'final',
+    'sky_basis': 'tregenza',
+    'sky_rows': 146,
+    'sky_density': 1,
+    'direct_samples': 64,
+    'maximum_samples': 4096,
+    'maximum_bounces': 1,
 }
 
 
-# ── Internal helper ───────────────────────────────────────────────────────────
-
-def _base_settings(project_folder: str) -> RecipeSettings:
-    cpu_total = multiprocessing.cpu_count()
-    # Cap per-study workers to avoid oversubscription when multiple studies run concurrently.
-    # Override with HB_SIM_WORKERS if you need a different value.
-    worker_cap = int(os.environ.get('HB_SIM_WORKERS', '4'))
-    workers = max(1, min(cpu_total, worker_cap))
-    return RecipeSettings(
-        folder=project_folder,
-        workers=workers,
-        reload_old=False,
-    )
+def _backend() -> str:
+    """Return the requested Foton backend (auto-select by default)."""
+    return os.environ.get('FOTON_BACKEND', 'auto').strip().lower() or 'auto'
 
 
-def _run(recipe_name: str, model_path: str, project_folder: str,
-         sensor_count: int, draft: bool, extra_inputs: dict | None = None) -> None:
-    recipe = Recipe(recipe_name)
-    recipe.input_value_by_name('model', model_path)
-    recipe.input_value_by_name('min-sensor-count', sensor_count)
-
-    rad = RAD_PARAMS.get(recipe_name, {}).get(draft)
-    if rad:
-        recipe.input_value_by_name('radiance-parameters', rad)
-
-    for name, value in (extra_inputs or {}).items():
-        recipe.input_value_by_name(name, value)
-
-    recipe.run(_base_settings(project_folder), queenbee_path=_QUEENBEE)
+def _check_sensor_count(actual: int, expected: int) -> None:
+    if actual != expected:
+        raise RuntimeError(
+            f'Foton prepared {actual} sensors, but the Honeybee model reported '
+            f'{expected}.'
+        )
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
+def _write_sensor_points(prepared, output_folder: Path) -> None:
+    """Write Honeybee-style ``.pts`` files for the API result coordinates."""
+    grid_folder = output_folder / 'model' / 'grid'
+    grid_folder.mkdir(parents=True, exist_ok=True)
+    positions = prepared.arrays['sensor_positions']
+    normals = prepared.arrays['sensor_normals']
+
+    for grid in prepared.grid_info:
+        start = int(grid['start_sensor_index'])
+        end = start + int(grid['sensor_count'])
+        points = np.column_stack((positions[start:end], normals[start:end]))
+        np.savetxt(
+            grid_folder / f"{grid['full_identifier']}.pts",
+            points,
+            fmt='%.8f',
+        )
+
+
+def _grid_manifest(prepared) -> list[dict]:
+    """Describe each grid's slice in Foton's preserved sensor order."""
+    room_by_id = {value: key for key, value in prepared.room_map.items()}
+    manifest = []
+    for grid in prepared.grid_info:
+        room_ids = list(grid.get('room_ids', ()))
+        room_identifier = (
+            room_by_id.get(room_ids[0], '') if len(room_ids) == 1 else ''
+        )
+        match = re.search(r'_Floor_(\d+)$', room_identifier)
+        manifest.append({
+            'identifier': grid['identifier'],
+            'full_identifier': grid['full_identifier'],
+            'room_identifier': room_identifier,
+            'floor_number': int(match.group(1)) if match else None,
+            'start_sensor_index': int(grid['start_sensor_index']),
+            'sensor_count': int(grid['sensor_count']),
+        })
+    return manifest
+
 
 def run_df(model_path: str, project_folder: str, sensor_count: int,
            *, draft: bool = True) -> None:
-    """Run the daylight-factor recipe."""
-    _run('daylight-factor', model_path, project_folder, sensor_count, draft)
+    """Run final-quality Tregenza DF and write index-compatible results.
+
+    ``draft`` remains in the signature for compatibility with existing API
+    callers but Foton always uses the final-quality preset.
+    """
+    output = Path(project_folder).resolve() / 'daylight_factor'
+    results_folder = output / 'results'
+    results_folder.mkdir(parents=True, exist_ok=True)
+
+    prepared = prepare_honeybee_scene(
+        model_path,
+        include_aperture_glazing=True,
+    )
+    actual_count = int(prepared.arrays['sensor_positions'].shape[0])
+    _check_sensor_count(actual_count, sensor_count)
+
+    engine = Engine({'backend': _backend()})
+    scene = prepared.create_native_scene(engine)
+    settings = FINAL_TREGENZA
+
+    # DF is evaluated against Foton's normalized CIE overcast sky. The sky
+    # values passed here establish only the patch basis and timestep count.
+    sky = np.zeros((settings['sky_rows'], 1, 3), dtype=np.float32)
+    occupancy = np.ones(1, dtype=np.float32)
+    result = scene.analyze(
+        sky,
+        occupancy,
+        quality=settings['quality'],
+        metrics=['df'],
+        direct_samples=settings['direct_samples'],
+        maximum_samples=settings['maximum_samples'],
+        maximum_bounces=settings['maximum_bounces'],
+        scene_seed=0,
+    ).result()
+    values = result.daylight_factor()
+    if values is None:
+        raise RuntimeError('Foton did not return daylight-factor results.')
+    values = np.asarray(values, dtype=np.float32)
+
+    for grid in prepared.grid_info:
+        start = int(grid['start_sensor_index'])
+        end = start + int(grid['sensor_count'])
+        np.savetxt(
+            results_folder / f"{grid['full_identifier']}.res",
+            values[start:end],
+            fmt='%.6f',
+        )
+
+    _write_sensor_points(prepared, output)
+    (output / 'grids_info.json').write_text(
+        json.dumps(_grid_manifest(prepared), indent=2),
+        encoding='utf-8',
+    )
+    metadata = {
+        'engine': 'foton',
+        'backend': dict(engine.capabilities()),
+        'quality': settings,
+        'requested_api_quality': 'draft' if draft else 'full',
+        'solver': json.loads(result.metadata_json()),
+        'timings': dict(result.timings()),
+    }
+    (output / 'metadata.json').write_text(
+        json.dumps(metadata, indent=2, sort_keys=True),
+        encoding='utf-8',
+    )
 
 
 def run_annual(model_path: str, project_folder: str, sensor_count: int,
-               wea_path: str, *, draft: bool = True) -> None:
-    """Run the annual-daylight recipe with the supplied WEA file."""
-    _run('annual_daylight', model_path, project_folder, sensor_count, draft,
-         extra_inputs={'wea': wea_path})
+               wea_path: str, *, draft: bool = True, da_lux: int = 300,
+               sda_target_pct: float = 50.0) -> None:
+    """Run final-quality Tregenza annual daylight with Foton."""
+    run = run_annual_daylight(
+        model=model_path,
+        wea=wea_path,
+        output_folder=Path(project_folder).resolve() / 'annual_daylight',
+        backend=_backend(),
+        quality=FINAL_TREGENZA['quality'],
+        sky_density=FINAL_TREGENZA['sky_density'],
+        direct_samples=FINAL_TREGENZA['direct_samples'],
+        maximum_samples=FINAL_TREGENZA['maximum_samples'],
+        maximum_bounces=FINAL_TREGENZA['maximum_bounces'],
+        threshold=float(da_lux),
+        target_time=float(sda_target_pct),
+        export_illuminance=False,
+    )
+    actual_count = int(run.metadata['sensor_count'])
+    _check_sensor_count(actual_count, sensor_count)
