@@ -2,7 +2,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.13-blue?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.139-009688?logo=fastapi&logoColor=white)
-![Foton](https://img.shields.io/badge/Foton-0.2.0-blueviolet)
+![Foton](https://img.shields.io/badge/Foton-0.3.6-blueviolet)
 ![Honeybee](https://img.shields.io/badge/Honeybee-models-yellow?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PC9zdmc+)
 ![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)
 ![Tests](https://img.shields.io/badge/tests-65%20passing-brightgreen?logo=pytest&logoColor=white)

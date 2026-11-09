@@ -17,7 +17,7 @@ dragonfly-schema==2.2.2
 dragonfly-uwg==0.5.743
 fastapi==0.139.2
 fonttools==4.63.0
-foton-daylight[honeybee]==0.2.0
+foton-daylight[honeybee]==0.3.6
 h11==0.16.0
 httpx==0.28.1
 honeybee-core==1.64.60

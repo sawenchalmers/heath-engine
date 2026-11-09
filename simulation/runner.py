@@ -18,7 +18,7 @@ from foton.honeybee import run_annual_daylight
 from foton.honeybee.adapter import prepare_honeybee_scene
 
 
-DAYLIGHT_SOLVER_PROFILE = 'foton-0.2-final-tregenza-multifloor-v2'
+DAYLIGHT_SOLVER_PROFILE = 'foton-0.3-final-tregenza-multifloor-v2'
 
 FINAL_TREGENZA = {
     'quality': 'final',
